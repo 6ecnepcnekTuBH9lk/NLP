@@ -18,15 +18,11 @@ from sklearn.naive_bayes import MultinomialNB, ComplementNB
 from sklearn.metrics import classification_report, confusion_matrix
 
 
-# -----------------------------
-# 0) Настройки по умолчанию
-# -----------------------------
-
 SEED = 42
-CHUNK_SIZE = 200           # будет в диапазоне 80–300 (можешь менять)
-STRIDE = 200               # шаг нарезки (200 = без перекрытия; 100 = 50% overlap)
-MIN_TOKENS_PER_DOC = 80    # отбрасываем совсем короткие чанки
-MAX_TOKENS_PER_DOC = 300   # если хочешь строго — можно резать по 300
+CHUNK_SIZE = 200
+STRIDE = 200
+MIN_TOKENS_PER_DOC = 80
+MAX_TOKENS_PER_DOC = 300
 
 # Жанры для domain shift
 TRAIN_GENRE = "prose"
@@ -35,27 +31,25 @@ SHIFT_GENRE = "poetry"
 # Папка с авторами
 DATA_ROOT = Path(__file__).resolve().parent / "data_authors"
 
-# Регулярка токенов (рус/лат, допускаем дефис внутри слова)
 WORD_RE = re.compile(r"[A-Za-zА-Яа-яЁё]+(?:-[A-Za-zА-Яa-яЁё]+)?")
 
 morph = pymorphy3.MorphAnalyzer()
+
 
 @lru_cache(maxsize=400_000)
 def lemma_cached(w: str) -> str:
     parses = morph.parse(w)
     return parses[0].normal_form if parses else w
 
+
 def normalize(text: str) -> str:
-    # lower + ё→е
+
     return text.lower().replace("ё", "е")
+
 
 def tokenize(text: str) -> list[str]:
     return WORD_RE.findall(normalize(text))
 
-
-# -----------------------------
-# 1) Загрузка текстов из папок
-# -----------------------------
 
 def read_all_txt(folder: Path) -> str:
     parts = []
@@ -65,6 +59,7 @@ def read_all_txt(folder: Path) -> str:
         except UnicodeDecodeError:
             parts.append(p.read_text(encoding="cp1251"))
     return "\n".join(parts)
+
 
 def load_author_genre(author_dir: Path, genre: str) -> str:
     folder = author_dir / genre
@@ -76,16 +71,12 @@ def load_author_genre(author_dir: Path, genre: str) -> str:
     return text
 
 
-# -----------------------------
-# 2) Препроцессинг (токены/леммы/стоп-слова)
-# -----------------------------
-
 def preprocess_tokens(tokens: list[str], *, use_lemmas: bool, remove_stopwords: bool) -> list[str]:
     out = tokens
     if remove_stopwords:
         out = [t for t in out if t not in RU_STOPWORDS]
     if use_lemmas:
-        # не лемматизируем очень короткие штуки (аббревиатуры/шум)
+
         def safe_lemma(t: str) -> str:
             if len(t) <= 3:
                 return t
@@ -96,10 +87,6 @@ def preprocess_tokens(tokens: list[str], *, use_lemmas: bool, remove_stopwords: 
     return out
 
 
-# -----------------------------
-# 3) Нарезка на чанки
-# -----------------------------
-
 def chunk_tokens(tokens: list[str], chunk_size: int, stride: int,
                  min_tokens: int = 80, max_tokens: int = 300) -> list[list[str]]:
     chunks = []
@@ -108,22 +95,18 @@ def chunk_tokens(tokens: list[str], chunk_size: int, stride: int,
     while i < n:
         chunk = tokens[i:i + chunk_size]
         if len(chunk) >= min_tokens:
-            # если хочешь жёстко ограничивать сверху — можно обрезать
             chunk = chunk[:max_tokens]
             chunks.append(chunk)
         i += stride
     return chunks
 
 
-# -----------------------------
-# 4) Построение датасета (X, y) по жанру
-# -----------------------------
-
 @dataclass
 class DatasetXY:
     X: list[str]
     y: list[int]
     label_names: list[str]
+
 
 def build_xy_for_genre(author1_dir: Path, author2_dir: Path, genre: str,
                        *, use_lemmas: bool, remove_stopwords: bool,
@@ -139,7 +122,6 @@ def build_xy_for_genre(author1_dir: Path, author2_dir: Path, genre: str,
     chunks2 = chunk_tokens(toks2, chunk_size=chunk_size, stride=stride,
                            min_tokens=MIN_TOKENS_PER_DOC, max_tokens=MAX_TOKENS_PER_DOC)
 
-    # превращаем в "документы" (строки), чтобы CountVectorizer мог строить n-граммы
     docs1 = [" ".join(ch) for ch in chunks1]
     docs2 = [" ".join(ch) for ch in chunks2]
 
@@ -154,23 +136,16 @@ def build_xy_for_genre(author1_dir: Path, author2_dir: Path, genre: str,
     return DatasetXY(X=X, y=y, label_names=label_names)
 
 
-# -----------------------------
-# 5) Обучение + метрики + top-20 по Δ(w)
-# -----------------------------
-
 def fit_and_report(X_train, y_train, X_test, y_test, label_names: list[str],
                    *, ngram_range=(1, 1), alpha: float = 0.1, use_complement_nb: bool = False):
-    """
-    Обучаем CountVectorizer + (MultinomialNB или ComplementNB) и печатаем отчёт.
-    Возвращаем обученный vectorizer и classifier.
-    """
+
     vectorizer = CountVectorizer(
         tokenizer=str.split,
         preprocessor=None,
         lowercase=False,
         ngram_range=ngram_range,
         min_df=2,
-        token_pattern=None,  # чтобы sklearn не предупреждал
+        token_pattern=None,
     )
 
     Xtr = vectorizer.fit_transform(X_train)
@@ -194,12 +169,10 @@ def fit_and_report(X_train, y_train, X_test, y_test, label_names: list[str],
         zero_division=0
     ))
 
-    # Top-20 по Δ(w) = log P(w|class0) - log P(w|class1)
     feature_names = vectorizer.get_feature_names_out()
-    logp = clf.feature_log_prob_  # shape: [n_classes, n_features]
+    logp = clf.feature_log_prob_
     delta = logp[0] - logp[1]
 
-    # top for class0 and class1
     top0_idx = delta.argsort()[::-1][:20]
     top1_idx = delta.argsort()[:20]
 
@@ -214,10 +187,6 @@ def fit_and_report(X_train, y_train, X_test, y_test, label_names: list[str],
     return vectorizer, clf
 
 
-# -----------------------------
-# 6) Эксперименты: baseline → stopwords → lemmas → ngrams
-# -----------------------------
-
 @dataclass
 class Variant:
     name: str
@@ -225,6 +194,7 @@ class Variant:
     remove_stopwords: bool
     ngram_range: tuple[int, int]
     use_complement_nb: bool = False
+
 
 def run_variants(author1_dir: Path, author2_dir: Path):
     random.seed(SEED)
@@ -235,7 +205,6 @@ def run_variants(author1_dir: Path, author2_dir: Path):
         Variant("Lemmas (pymorphy3, unigrams, MultinomialNB)", use_lemmas=True, remove_stopwords=False, ngram_range=(1, 1)),
         Variant("Lemmas + stopwords removed (unigrams, MultinomialNB)", use_lemmas=True, remove_stopwords=True, ngram_range=(1, 1)),
         Variant("Lemmas + stopwords + bigrams (1–2), MultinomialNB", use_lemmas=True, remove_stopwords=True, ngram_range=(1, 2)),
-        # если хочешь — ComplementNB часто устойчивее на текстах:
         Variant("Lemmas + stopwords + bigrams (1–2), ComplementNB", use_lemmas=True, remove_stopwords=True, ngram_range=(1, 2), use_complement_nb=True),
     ]
 
@@ -244,7 +213,6 @@ def run_variants(author1_dir: Path, author2_dir: Path):
         print("VARIANT:", v.name)
         print(f"use_lemmas={v.use_lemmas}, stopwords={v.remove_stopwords}, ngrams={v.ngram_range}, complementNB={v.use_complement_nb}")
 
-        # --- In-domain: train/test на TRAIN_GENRE (например, проза → проза) ---
         ds_train = build_xy_for_genre(
             author1_dir, author2_dir, TRAIN_GENRE,
             use_lemmas=v.use_lemmas,
@@ -262,7 +230,6 @@ def run_variants(author1_dir: Path, author2_dir: Path):
             use_complement_nb=v.use_complement_nb
         )
 
-        # --- Domain shift: train на TRAIN_GENRE, test на SHIFT_GENRE (проза → стихи) ---
         ds_shift = build_xy_for_genre(
             author1_dir, author2_dir, SHIFT_GENRE,
             use_lemmas=v.use_lemmas,
@@ -271,7 +238,6 @@ def run_variants(author1_dir: Path, author2_dir: Path):
             stride=STRIDE,
         )
 
-        # обучим на ВСЕЙ прозе, проверим на ВСЕХ стихах
         print(f"\nDOMAIN SHIFT: train on '{TRAIN_GENRE}' -> test on '{SHIFT_GENRE}' | test_docs={len(ds_shift.X)}")
 
         Xtr_full = vectorizer.fit_transform(ds_train.X)
@@ -291,17 +257,10 @@ def run_variants(author1_dir: Path, author2_dir: Path):
             zero_division=0
         ))
 
-        # (не обязательно) важные токены в shift-режиме те же (модель та же), так что повтор не делаем
-
 
 def main():
     author1_dir = DATA_ROOT / "pushkin"
     author2_dir = DATA_ROOT / "lermontov"
-
-    # Переименуй папки author1/author2 на реальные имена (например, "tolstoy", "dostoevsky")
-    # и поправь здесь:
-    # author1_dir = DATA_ROOT / "tolstoy"
-    # author2_dir = DATA_ROOT / "dostoevsky"
 
     if not author1_dir.exists() or not author2_dir.exists():
         raise FileNotFoundError(

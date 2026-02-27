@@ -108,7 +108,7 @@ def main():
         save_text(path, text)
 
         print(f"   saved -> {path} (chars={len(text):,})")
-        time.sleep(1.0)  # чуть-чуть “вежливо” к сайту
+        time.sleep(1.0)
 
     print("\nDONE. Dataset folder:", OUT)
 
